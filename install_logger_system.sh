@@ -235,6 +235,12 @@ get_mysql_password() {
         print_error "MySQL password cannot be empty"
         exit 1
     fi
+    
+    # Escape special characters in password for sed
+    ESCAPED_MYSQL_PASSWORD=$(printf '%s\n' "$MYSQL_PASSWORD" | sed -e 's/[\/&]/\\&/g')
+    
+    # Debug: Show that we have the password
+    print_status "MySQL password captured (length: ${#MYSQL_PASSWORD})"
 }
 
 # Fix MySQL authentication
@@ -243,7 +249,7 @@ fix_mysql_authentication() {
     
     print_status "Changing MySQL authentication method to mysql_native_password..."
     
-    mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '$MYSQL_PASSWORD'; FLUSH PRIVILEGES;" 2>/dev/null || {
+    mysql -u root -p"$MYSQL_PASSWORD" -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '$MYSQL_PASSWORD'; FLUSH PRIVILEGES;" 2>/dev/null || {
         print_warning "Could not change authentication method (may already be configured)"
     }
     
@@ -474,8 +480,14 @@ setup_project_files() {
     # Update connection.php with actual password
     if [ -f "connection.php" ]; then
         print_status "Updating database connection..."
-        sed -i "s/YOUR_MYSQL_PASSWORD/$MYSQL_PASSWORD/g" connection.php
-        sed -i "s/\$password = '';/\$password = '$MYSQL_PASSWORD';/g" connection.php
+        # Show the password length for debugging (without revealing the actual password)
+        print_status "Updating connection.php with password (length: ${#ESCAPED_MYSQL_PASSWORD})"
+        
+        # Use the escaped password to handle special characters
+        sed -i "s/\$password = '';/\$password = '$ESCAPED_MYSQL_PASSWORD';/g" connection.php
+        
+        # Debug: Show the result
+        grep "\$password" connection.php | print_status "Updated connection line:"
     fi
     
     # Update log_fetcher_cron.sh path - replace entire cd line
@@ -542,10 +554,27 @@ test_installation() {
     
     print_status "Testing database connection..."
     cd "$PROJECT_DIR"
+    
+    # First, let's check what's in the connection.php file
+    print_status "Checking connection.php content:"
+    grep "\$password" connection.php | print_status "  "
+    
     if timeout 5 php -r "require 'connection.php'; echo 'Connected\n';" 2>/dev/null; then
         print_success "Database connection test passed"
     else
         print_error "Database connection test failed"
+        print_status "Let's test the connection details manually:"
+        # Test with PHP to get more detailed error information
+        php -r "
+        require 'connection.php';
+        try {
+            \$pdo = new PDO(\"mysql:host=\$host;dbname=\$dbname\", \$username, \$password);
+            echo \"Connection successful\n\";
+        } catch (PDOException \$e) {
+            echo \"Connection failed: \" . \$e->getMessage() . \"\n\";
+        }
+        " 2>&1 | while read line; do print_error "  \$line"; done
+        
         exit 1
     fi
     

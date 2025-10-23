@@ -219,13 +219,13 @@ echo
 
 # Step 5.1: Fix MySQL root authentication for PHP
 print_step "Step 5.1: Configuring MySQL authentication for PHP..."
-CURRENT_PLUGIN=$(sudo mysql -u root -se "SELECT plugin FROM mysql.user WHERE user='root' AND host='localhost';" 2>/dev/null)
+CURRENT_PLUGIN=$($MYSQL_CMD -se "SELECT plugin FROM mysql.user WHERE user='root' AND host='localhost';" 2>/dev/null)
 
 if [ "$CURRENT_PLUGIN" = "auth_socket" ] || [ "$CURRENT_PLUGIN" = "unix_socket" ]; then
     print_warning "MySQL root user is using socket authentication"
     print_status "Changing to mysql_native_password for PHP compatibility..."
     
-    sudo mysql -u root << 'EOSQL'
+    $MYSQL_CMD << 'EOSQL'
 -- Change root authentication method
 ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '';
 

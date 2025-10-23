@@ -252,7 +252,7 @@ else
 fi
 echo
 
-# Step 5.2: Create dedicated API user
+# Step 5.2: Create dedicated MySQL user for API
 print_step "Step 5.2: Creating dedicated MySQL user for API..."
 if $MYSQL_CMD -e "SELECT 1 FROM mysql.user WHERE user='${API_USER}' AND host='localhost';" >/dev/null 2>&1; then
     print_warning "MySQL user '${API_USER}' already exists"
@@ -587,34 +587,21 @@ if command_exists ufw; then
     UFW_STATUS=$(sudo ufw status | grep -c "Status: active")
     
     if [ "$UFW_STATUS" -eq 0 ]; then
-        print_warning "UFW is installed but not active"
-        read -p "Do you want to enable UFW firewall? (y/n): " -n 1 -r -t 30 REPLY
-        if [[ ! $REPLY ]]; then
-            REPLY="n"
-            echo -e "\n${YELLOW}[INFO]${NC} No response received, defaulting to 'n'"
-        fi
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            print_status "Enabling UFW firewall..."
-            sudo ufw allow 22/tcp >/dev/null 2>&1
-            print_status "Allowed SSH (port 22)"
-            sudo ufw --force enable >/dev/null 2>&1
-            print_status "UFW firewall enabled"
-        else
-            print_warning "UFW not enabled - skipping firewall configuration"
-        fi
+        print_status "Enabling UFW firewall..."
+        sudo ufw allow 22/tcp >/dev/null 2>&1
+        print_status "Allowed SSH (port 22)"
+        sudo ufw --force enable >/dev/null 2>&1
+        print_status "UFW firewall enabled"
     fi
     
-    if sudo ufw status | grep -q "Status: active"; then
-        print_status "Configuring firewall rules..."
-        sudo ufw allow 80/tcp >/dev/null 2>&1 && print_status "Allowed HTTP (port 80)"
-        sudo ufw allow 443/tcp >/dev/null 2>&1 && print_status "Allowed HTTPS (port 443)"
-        sudo ufw reload >/dev/null 2>&1
-        print_status "Firewall rules reloaded"
-        echo
-        print_status "Current firewall rules:"
-        sudo ufw status numbered | grep -E "(80|443|22)" || true
-    fi
+    print_status "Configuring firewall rules..."
+    sudo ufw allow 80/tcp >/dev/null 2>&1 && print_status "Allowed HTTP (port 80)"
+    sudo ufw allow 443/tcp >/dev/null 2>&1 && print_status "Allowed HTTPS (port 443)"
+    sudo ufw reload >/dev/null 2>&1
+    print_status "Firewall rules reloaded"
+    echo
+    print_status "Current firewall rules:"
+    sudo ufw status numbered | grep -E "(80|443|22)" || true
 else
     print_warning "UFW firewall not installed"
     print_warning "To install UFW: sudo apt install ufw"

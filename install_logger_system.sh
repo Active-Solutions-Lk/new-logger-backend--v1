@@ -90,6 +90,20 @@ echo -e "${GREEN} Remote Logs API Installation   ${NC}"
 echo -e "${GREEN}================================${NC}"
 echo
 
+# Get MySQL root password
+print_step "MySQL Configuration"
+echo
+read -s -p "Enter MySQL root password (press Enter if empty): " MYSQL_ROOT_PASSWORD
+echo
+if [ -z "$MYSQL_ROOT_PASSWORD" ]; then
+    print_warning "Using empty password for MySQL root user"
+    MYSQL_CMD="mysql -u root"
+else
+    print_status "MySQL password captured (length: ${#MYSQL_ROOT_PASSWORD})"
+    MYSQL_CMD="mysql -u root -p${MYSQL_ROOT_PASSWORD}"
+fi
+echo
+
 print_step "Starting automated installation process..."
 echo
 
@@ -194,12 +208,6 @@ echo
 
 # Step 5: Test MySQL connection
 print_step "Step 5: Testing MySQL connection..."
-if [ -z "${MYSQL_ROOT_PASSWORD}" ]; then
-    MYSQL_CMD="mysql -u root"
-else
-    MYSQL_CMD="mysql -u root -p${MYSQL_ROOT_PASSWORD}"
-fi
-
 if $MYSQL_CMD -e "SELECT 1;" >/dev/null 2>&1; then
     print_status "MySQL connection test successful"
 else
@@ -229,7 +237,7 @@ EOSQL
         print_status "MySQL authentication method updated successfully"
         
         # Verify the change
-        if mysql -u root -e "SELECT 1;" >/dev/null 2>&1; then
+        if $MYSQL_CMD -e "SELECT 1;" >/dev/null 2>&1; then
             print_status "Verified: MySQL root can now connect with empty password"
         else
             print_error "Failed to verify MySQL connection"

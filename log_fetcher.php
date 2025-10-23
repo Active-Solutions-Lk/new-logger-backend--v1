@@ -1,8 +1,8 @@
 <?php
 // Include database connection, message parser, and device manager
-require_once 'connection.php';
-require_once 'message_parser.php';
-require_once 'device_manager.php';
+require_once '/var/www/html/new-logger-backend--v1/connection.php';
+require_once '/var/www/html/new-logger-backend--v1/message_parser.php';
+require_once '/var/www/html/new-logger-backend--v1/device_manager.php';
 
 echo "Connected to database successfully\n";
 

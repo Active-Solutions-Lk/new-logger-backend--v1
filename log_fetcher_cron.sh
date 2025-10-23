@@ -17,7 +17,7 @@ ERROR_FILE="/var/log/logger_system/log_fetcher_error.log"
 echo "=== Log Fetcher Started at $(date) ===" >> $LOG_FILE
 
 # Run the PHP script and capture both output and errors
-php log_fetcher.php >> $LOG_FILE 2>> $ERROR_FILE
+php /var/www/html/new-logger-backend--v1/log_fetcher.php >> $LOG_FILE 2>> $ERROR_FILE
 
 # Check exit status
 EXIT_CODE=$?

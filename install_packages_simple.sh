@@ -14,7 +14,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-DB_NAME="syslog_db"
+DB_NAME="logger_db"
 API_SECRET_KEY="sk_5a1b3c4d2e6f7a8b9c0d1e2f3a4b5c6d"
 API_DIR="/var/www/html/api"
 

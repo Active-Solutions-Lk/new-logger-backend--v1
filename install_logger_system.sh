@@ -93,7 +93,13 @@ echo
 # Get MySQL root password
 print_step "MySQL Configuration"
 echo
-read -s -p "Enter MySQL root password (press Enter if empty): " MYSQL_ROOT_PASSWORD
+# Add timeout to prevent hanging
+read -s -p "Enter MySQL root password (press Enter if empty): " -t 30 MYSQL_ROOT_PASSWORD
+# If timeout occurs, set empty password
+if [[ $? -gt 128 ]]; then
+    echo -e "\n${YELLOW}[INFO]${NC} No input received, using empty password"
+    MYSQL_ROOT_PASSWORD=""
+fi
 echo
 if [ -z "$MYSQL_ROOT_PASSWORD" ]; then
     print_warning "Using empty password for MySQL root user"
@@ -634,7 +640,13 @@ if command_exists ufw; then
     
     if [ "$UFW_STATUS" -eq 0 ]; then
         print_warning "UFW is installed but not active"
-        read -p "Do you want to enable UFW firewall? (y/n): " -n 1 -r
+        # Add timeout to prevent hanging
+        read -p "Do you want to enable UFW firewall? (y/n): " -n 1 -r -t 30 REPLY
+        # Default to 'n' if no input or timeout
+        if [[ ! $REPLY ]]; then
+            REPLY="n"
+            echo -e "\n${YELLOW}[INFO]${NC} No response received, defaulting to 'n'"
+        fi
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             # Enable UFW

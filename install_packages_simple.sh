@@ -49,7 +49,13 @@ echo
 # Get MySQL root password
 print_step "MySQL Configuration"
 echo
-read -s -p "Enter MySQL root password (press Enter if empty): " MYSQL_ROOT_PASSWORD
+# Add timeout to prevent hanging
+read -s -p "Enter MySQL root password (press Enter if empty): " -t 30 MYSQL_ROOT_PASSWORD
+# If timeout occurs, set empty password
+if [[ $? -gt 128 ]]; then
+    echo -e "\n${YELLOW}[INFO]${NC} No input received, using empty password"
+    MYSQL_ROOT_PASSWORD=""
+fi
 echo
 if [ -z "$MYSQL_ROOT_PASSWORD" ]; then
     print_warning "Using empty password for MySQL root user"

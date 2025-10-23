@@ -4,7 +4,7 @@ echo "=== Logger System Health Check ==="
 echo
 
 echo "1. Checking Database Connection..."
-php -r "require '/var/www/html/new-logger-backend/connection.php'; echo 'OK\n';" 2>&1 || echo "FAILED"
+php -r "require './connection.php'; echo 'OK\n';" 2>&1 || echo "FAILED"
 
 echo "2. Checking Cron Job..."
 crontab -l | grep -q "log_fetcher" && echo "OK" || echo "NOT FOUND"

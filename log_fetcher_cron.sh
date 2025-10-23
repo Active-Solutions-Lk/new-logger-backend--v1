@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Set the working directory
-cd /var/www/html/new-logger-backend
+# Set the working directory to the directory where this script is located
+cd "$(dirname "$0")"
 
 # Set environment variables
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"

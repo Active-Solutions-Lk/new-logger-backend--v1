@@ -1,32 +1,24 @@
 #!/bin/bash
 
-# Logger System Automated Installation Script with Activation
-# This script installs and configures the complete logger backend system
+# Remote Logs API - Automated Installation Script
+# This script installs and configures all required components
+# Author: Auto-generated for Remote Logs API
+# Date: $(date)
 
 set -e  # Exit on any error
 
-# Color codes for output
+# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Configuration variables
-PROJECT_DIR="/var/www/html/new-logger-backend"
-LOG_DIR="/var/log/logger_system"
-DB_NAME="logger_db"
-DB_USER="root"
-
-# Activation API configuration
-ACTIVATION_API_URL="http://142.91.101.137:3000/api/project_validate"
-SECRET_KEY="I3UYA2HSQPB86XpsdVUb9szDu5tn2W3fOpg8"  # Hardcoded secret key
-
-# Global variables for validated data
-ACTIVATION_KEY=""
-PROJECT_ID=""
-COLLECTOR_PORTS=()
-LOGGER_IP=""
+# Configuration
+DB_NAME="syslog_db"
+API_SECRET_KEY="sk_5a1b3c4d2e6f7a8b9c0d1e2f3a4b5c6d"
+API_DIR="/var/www/html/api"
+MYSQL_ROOT_PASSWORD=""  # Will be requested from user
 
 # Function to print colored output
 print_status() {
@@ -41,647 +33,846 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-print_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
+print_step() {
+    echo -e "${BLUE}[STEP]${NC} $1"
 }
 
-print_header() {
-    echo -e "${BLUE}================================${NC}"
-    echo -e "${BLUE}$1${NC}"
-    echo -e "${BLUE}================================${NC}"
+# Function to check if command exists
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
 }
 
-# Check if running as root
-check_root() {
-    if [[ $EUID -ne 0 ]]; then
-        print_error "This script must be run as root (use sudo)"
-        exit 1
+# Function to check if MySQL service is running
+check_mysql_service() {
+    if systemctl is-active --quiet mysql; then
+        return 0
+    else
+        return 1
     fi
 }
 
-# Get machine IP address
-get_machine_ip() {
-    # Try to get primary network interface IP
-    LOGGER_IP=$(hostname -I | awk '{print $1}')
-    
-    if [ -z "$LOGGER_IP" ]; then
-        print_error "Could not detect machine IP address"
-        exit 1
+# Function to check if database exists
+database_exists() {
+    if [ -z "${MYSQL_ROOT_PASSWORD}" ]; then
+        mysql -u root -e "USE ${DB_NAME};" 2>/dev/null
+    else
+        mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "USE ${DB_NAME};" 2>/dev/null
     fi
-    
-    print_status "Detected Logger IP: $LOGGER_IP"
+    return $?
 }
 
-# Get activation key from user
-get_activation_key() {
-    print_header "ACTIVATION KEY VERIFICATION"
-    
-    echo -n "Enter your Activation Key (format: XXXX-XXXX-XXXX): "
-    read ACTIVATION_KEY
-    
-    if [ -z "$ACTIVATION_KEY" ]; then
-        print_error "Activation key cannot be empty"
-        exit 1
+# Function to check if table exists
+table_exists() {
+    if [ -z "${MYSQL_ROOT_PASSWORD}" ]; then
+        mysql -u root -D "${DB_NAME}" -e "DESCRIBE remote_logs;" 2>/dev/null
+    else
+        mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -D "${DB_NAME}" -e "DESCRIBE remote_logs;" 2>/dev/null
     fi
-    
-    # Basic format validation
-    if ! [[ "$ACTIVATION_KEY" =~ ^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$ ]]; then
-        print_error "Invalid activation key format. Expected format: XXXX-XXXX-XXXX"
-        exit 1
-    fi
-    
-    print_status "Activation key format validated"
+    return $?
 }
 
-# Get collector IP from user
-get_collector_ip() {
-    # Collector IP not needed - removed from workflow
-    print_status "Collector IP will be configured later in the system"
-}
-
-# Validate activation key with API
-validate_activation() {
-    print_header "VALIDATING ACTIVATION KEY"
-    
-    print_status "Contacting activation server at: $ACTIVATION_API_URL"
-    print_status "This may take a few seconds..."
-    
-    # Prepare JSON payload - only sending logger IP
-    JSON_PAYLOAD=$(cat <<EOF
-{
-    "activationKey": "$ACTIVATION_KEY",
-    "secretKey": "$SECRET_KEY",
-    "loggerIp": "$LOGGER_IP"
-}
-EOF
-)
-    
-    print_status "Sending activation request..."
-    
-    # Make API request with timeout
-    HTTP_RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
-        --connect-timeout 10 \
-        --max-time 30 \
-        -X POST "$ACTIVATION_API_URL" \
+# Function to test API endpoint
+test_api() {
+    local response=$(curl -s -X POST http://localhost/api/api.php \
         -H "Content-Type: application/json" \
-        -d "$JSON_PAYLOAD" 2>&1)
+        -d "{\"secret_key\": \"${API_SECRET_KEY}\"}" 2>/dev/null)
     
-    CURL_EXIT_CODE=$?
-    
-    # Check if curl command was successful
-    if [ $CURL_EXIT_CODE -ne 0 ]; then
-        print_error "Failed to connect to activation server!"
-        print_error "Curl exit code: $CURL_EXIT_CODE"
-        
-        case $CURL_EXIT_CODE in
-            6)
-                print_error "Could not resolve host. Please check the server address: $ACTIVATION_API_URL"
-                ;;
-            7)
-                print_error "Failed to connect to server. Please check if the server is running and accessible."
-                ;;
-            28)
-                print_error "Connection timeout. The server is not responding."
-                ;;
-            *)
-                print_error "Network error occurred. Please check your internet connection."
-                ;;
-        esac
-        
-        echo
-        print_error "Installation cannot proceed without activation."
-        print_error "Please verify:"
-        echo "  1. Activation server is running at: $ACTIVATION_API_URL"
-        echo "  2. Network connectivity is working"
-        echo "  3. Firewall is not blocking the connection"
+    if echo "$response" | grep -q '"success": true'; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Start installation
+echo -e "${GREEN}================================${NC}"
+echo -e "${GREEN} Remote Logs API Installation   ${NC}"
+echo -e "${GREEN}================================${NC}"
+echo
+
+print_step "Starting automated installation process..."
+echo
+
+# Step 1: Update system packages
+print_step "Step 1: Updating system packages..."
+if apt update >/dev/null 2>&1; then
+    print_status "System packages updated successfully"
+else
+    print_error "Failed to update system packages"
+    exit 1
+fi
+echo
+
+# Step 2: Install Apache2
+print_step "Step 2: Installing Apache2 web server..."
+if command_exists apache2; then
+    print_warning "Apache2 is already installed"
+    if systemctl is-active --quiet apache2; then
+        print_status "Apache2 service is running"
+    else
+        print_status "Starting Apache2 service..."
+        systemctl start apache2
+        systemctl enable apache2
+    fi
+else
+    if apt install -y apache2 >/dev/null 2>&1; then
+        print_status "Apache2 installed successfully"
+        systemctl start apache2
+        systemctl enable apache2
+        print_status "Apache2 service started and enabled"
+    else
+        print_error "Failed to install Apache2"
         exit 1
     fi
-    
-    # Extract HTTP status and response body
-    HTTP_BODY=$(echo "$HTTP_RESPONSE" | sed -e 's/HTTP_STATUS\:.*//g')
-    HTTP_STATUS=$(echo "$HTTP_RESPONSE" | tr -d '\n' | sed -e 's/.*HTTP_STATUS://')
-    
-    print_status "API Response Status: $HTTP_STATUS"
-    
-    # Check if we got a valid HTTP status
-    if [ -z "$HTTP_STATUS" ] || [ "$HTTP_STATUS" = "000" ]; then
-        print_error "No valid response from activation server"
-        print_error "Response received: $HTTP_RESPONSE"
-        echo
-        print_error "Installation cannot proceed. Please check server logs."
+fi
+echo
+
+# Step 3: Install PHP and extensions
+print_step "Step 3: Installing PHP and required extensions..."
+REQUIRED_PHP_PACKAGES="php libapache2-mod-php php-mysql php-json php-curl"
+MISSING_PACKAGES=""
+
+for package in $REQUIRED_PHP_PACKAGES; do
+    if ! dpkg -l | grep -q "^ii.*$package "; then
+        MISSING_PACKAGES="$MISSING_PACKAGES $package"
+    fi
+done
+
+if [ -n "$MISSING_PACKAGES" ]; then
+    print_status "Installing missing PHP packages:$MISSING_PACKAGES"
+    if apt install -y $MISSING_PACKAGES >/dev/null 2>&1; then
+        print_status "PHP packages installed successfully"
+    else
+        print_error "Failed to install PHP packages"
         exit 1
     fi
+else
+    print_warning "All PHP packages are already installed"
+fi
+
+# Enable PHP module
+if a2enmod php* >/dev/null 2>&1; then
+    print_status "PHP module enabled"
+fi
+echo
+
+# Step 4: Install MySQL Server
+print_step "Step 4: Installing MySQL Server..."
+if command_exists mysql; then
+    print_warning "MySQL is already installed"
+    if check_mysql_service; then
+        print_status "MySQL service is running"
+    else
+        print_status "Starting MySQL service..."
+        systemctl start mysql
+        systemctl enable mysql
+    fi
+else
+    print_status "Installing MySQL Server..."
+    # Set debconf for automated installation
+    echo "mysql-server mysql-server/root_password password $MYSQL_ROOT_PASSWORD" | debconf-set-selections
+    echo "mysql-server mysql-server/root_password_again password $MYSQL_ROOT_PASSWORD" | debconf-set-selections
     
-    # Check HTTP status
-    if [ "$HTTP_STATUS" != "200" ]; then
-        print_error "Activation failed!"
-        echo
-        print_error "Response body:"
-        echo "$HTTP_BODY" | python3 -m json.tool 2>/dev/null || echo "$HTTP_BODY"
+    if apt install -y mysql-server >/dev/null 2>&1; then
+        print_status "MySQL Server installed successfully"
+        systemctl start mysql
+        systemctl enable mysql
+        print_status "MySQL service started and enabled"
         
-        # Parse error message if available
-        ERROR_MSG=$(echo "$HTTP_BODY" | grep -o '"error":"[^"]*"' | cut -d'"' -f4)
-        if [ ! -z "$ERROR_MSG" ]; then
-            echo
-            print_error "Error: $ERROR_MSG"
-        fi
+        # Secure installation (basic)
+        mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "DELETE FROM mysql.user WHERE User='';" 2>/dev/null || true
+        mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');" 2>/dev/null || true
+        mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "DROP DATABASE IF EXISTS test;" 2>/dev/null || true
+        mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "FLUSH PRIVILEGES;" 2>/dev/null || true
+        print_status "MySQL basic security applied"
+    else
+        print_error "Failed to install MySQL Server"
+        exit 1
+    fi
+fi
+echo
+
+# Step 5: Test MySQL connection
+print_step "Step 5: Testing MySQL connection..."
+if [ -z "${MYSQL_ROOT_PASSWORD}" ]; then
+    MYSQL_CMD="mysql -u root"
+else
+    MYSQL_CMD="mysql -u root -p${MYSQL_ROOT_PASSWORD}"
+fi
+
+if $MYSQL_CMD -e "SELECT 1;" >/dev/null 2>&1; then
+    print_status "MySQL connection test successful"
+else
+    print_error "MySQL connection test failed"
+    print_error "Please check MySQL installation and root password"
+    exit 1
+fi
+echo
+
+# Step 5.1: Fix MySQL root authentication for PHP
+print_step "Step 5.1: Configuring MySQL authentication for PHP..."
+CURRENT_PLUGIN=$(sudo mysql -u root -se "SELECT plugin FROM mysql.user WHERE user='root' AND host='localhost';" 2>/dev/null)
+
+if [ "$CURRENT_PLUGIN" = "auth_socket" ] || [ "$CURRENT_PLUGIN" = "unix_socket" ]; then
+    print_warning "MySQL root user is using socket authentication"
+    print_status "Changing to mysql_native_password for PHP compatibility..."
+    
+    sudo mysql -u root << 'EOSQL'
+-- Change root authentication method
+ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '';
+
+-- Flush privileges
+FLUSH PRIVILEGES;
+EOSQL
+    
+    if [ $? -eq 0 ]; then
+        print_status "MySQL authentication method updated successfully"
         
-        echo
-        print_error "Installation cannot proceed without valid activation."
-        exit 1
-    fi
-    
-    # Parse successful response
-    print_success "Activation successful!"
-    
-    # Extract project ID
-    PROJECT_ID=$(echo "$HTTP_BODY" | grep -o '"projectId":[0-9]*' | cut -d':' -f2)
-    
-    if [ -z "$PROJECT_ID" ]; then
-        print_error "Could not extract project ID from response"
-        print_error "Response: $HTTP_BODY"
-        exit 1
-    fi
-    
-    print_status "Project ID: $PROJECT_ID"
-    
-    # Extract ports
-    PORTS_JSON=$(echo "$HTTP_BODY" | grep -o '"ports":\[[^]]*\]')
-    if [ ! -z "$PORTS_JSON" ]; then
-        # Parse ports array
-        COLLECTOR_PORTS=($(echo "$PORTS_JSON" | grep -o '"port":[0-9]*' | cut -d':' -f2))
-        if [ ${#COLLECTOR_PORTS[@]} -gt 0 ]; then
-            print_status "Assigned Ports: ${COLLECTOR_PORTS[*]}"
+        # Verify the change
+        if mysql -u root -e "SELECT 1;" >/dev/null 2>&1; then
+            print_status "Verified: MySQL root can now connect with empty password"
         else
-            print_warning "No ports found in response"
+            print_error "Failed to verify MySQL connection"
+            exit 1
         fi
     else
-        print_warning "No ports assigned in response"
-    fi
-    
-    echo
-    print_success "Activation validated successfully!"
-    echo "  Project ID: $PROJECT_ID"
-    echo "  Logger IP: $LOGGER_IP"
-    echo "  Assigned Ports: ${COLLECTOR_PORTS[*]}"
-    echo
-}
-
-# Get MySQL password
-get_mysql_password() {
-    read -s -p "Enter MySQL root password: " MYSQL_PASSWORD
-    echo
-    if [ -z "$MYSQL_PASSWORD" ]; then
-        print_error "MySQL password cannot be empty"
+        print_error "Failed to update MySQL authentication method"
         exit 1
     fi
-    
-    # Escape special characters in password for sed
-    ESCAPED_MYSQL_PASSWORD=$(printf '%s\n' "$MYSQL_PASSWORD" | sed -e 's/[\/&]/\\&/g')
-    
-    # Debug: Show that we have the password
-    print_status "MySQL password captured (length: ${#MYSQL_PASSWORD})"
+else
+    print_status "MySQL root authentication is already configured correctly"
+fi
+echo
+
+# Step 6: Create database and table
+print_step "Step 6: Setting up database and table..."
+if database_exists; then
+    print_warning "Database '${DB_NAME}' already exists"
+    if table_exists; then
+        print_warning "Table 'remote_logs' already exists"
+        # Count existing records
+        if [ -z "${MYSQL_ROOT_PASSWORD}" ]; then
+            RECORD_COUNT=$(mysql -u root -D "${DB_NAME}" -se "SELECT COUNT(*) FROM remote_logs;" 2>/dev/null)
+        else
+            RECORD_COUNT=$(mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -D "${DB_NAME}" -se "SELECT COUNT(*) FROM remote_logs;" 2>/dev/null)
+        fi
+        print_status "Current record count: ${RECORD_COUNT}"
+    else
+        print_status "Creating 'remote_logs' table..."
+        if [ -z "${MYSQL_ROOT_PASSWORD}" ]; then
+            mysql -u root -D "${DB_NAME}" << 'EOF'
+CREATE TABLE remote_logs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    received_at DATETIME NULL,
+    hostname VARCHAR(255) NULL,
+    facility VARCHAR(50) NULL,
+    message TEXT NULL,
+    port INT NULL,
+    INDEX idx_received_at (received_at),
+    INDEX idx_hostname (hostname),
+    INDEX idx_facility (facility)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+EOF
+        else
+            mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -D "${DB_NAME}" << 'EOF'
+CREATE TABLE remote_logs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    received_at DATETIME NULL,
+    hostname VARCHAR(255) NULL,
+    facility VARCHAR(50) NULL,
+    message TEXT NULL,
+    port INT NULL,
+    INDEX idx_received_at (received_at),
+    INDEX idx_hostname (hostname),
+    INDEX idx_facility (facility)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+EOF
+        fi
+        print_status "Table 'remote_logs' created successfully"
+    fi
+else
+    print_status "Creating database '${DB_NAME}'..."
+    if [ -z "${MYSQL_ROOT_PASSWORD}" ]; then
+        mysql -u root << EOF
+CREATE DATABASE IF NOT EXISTS ${DB_NAME} 
+CHARACTER SET utf8mb4 
+COLLATE utf8mb4_unicode_ci;
+
+USE ${DB_NAME};
+
+CREATE TABLE remote_logs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    received_at DATETIME NULL,
+    hostname VARCHAR(255) NULL,
+    facility VARCHAR(50) NULL,
+    message TEXT NULL,
+    port INT NULL,
+    INDEX idx_received_at (received_at),
+    INDEX idx_hostname (hostname),
+    INDEX idx_facility (facility)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+EOF
+    else
+        mysql -u root -p"${MYSQL_ROOT_PASSWORD}" << EOF
+CREATE DATABASE IF NOT EXISTS ${DB_NAME} 
+CHARACTER SET utf8mb4 
+COLLATE utf8mb4_unicode_ci;
+
+USE ${DB_NAME};
+
+CREATE TABLE remote_logs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    received_at DATETIME NULL,
+    hostname VARCHAR(255) NULL,
+    facility VARCHAR(50) NULL,
+    message TEXT NULL,
+    port INT NULL,
+    INDEX idx_received_at (received_at),
+    INDEX idx_hostname (hostname),
+    INDEX idx_facility (facility)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+EOF
+    fi
+    print_status "Database and table created successfully"
+fi
+
+# Insert sample data if table is empty
+if [ -z "${MYSQL_ROOT_PASSWORD}" ]; then
+    RECORD_COUNT=$(mysql -u root -D "${DB_NAME}" -se "SELECT COUNT(*) FROM remote_logs;" 2>/dev/null)
+else
+    RECORD_COUNT=$(mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -D "${DB_NAME}" -se "SELECT COUNT(*) FROM remote_logs;" 2>/dev/null)
+fi
+
+if [ "$RECORD_COUNT" -eq 0 ]; then
+    print_status "Inserting sample data..."
+    if [ -z "${MYSQL_ROOT_PASSWORD}" ]; then
+        mysql -u root -D "${DB_NAME}" << 'EOF'
+INSERT INTO remote_logs (received_at, hostname, facility, message, port) VALUES
+('2025-09-20 12:24:39', 'DiskStation4', 'user', 'Test message from Synology Syslog Client from (112.134.220.176)', 520),
+('2025-09-21 07:01:07', 'Active-Com', 'user', 'SYSTEM: System successfully registered [112.134.220.176] to [cont.synology.me] in DDNS server [Synology].', 520),
+('2025-09-22 11:04:40', 'Active-Com', 'user', 'User [Active] from [192.168.0.47] signed in to [DSM] successfully via [password].', 520),
+('2025-09-22 19:00:01', 'Active-Com', 'user', 'SYSTEM: System start counting down to shutdown. This is triggered by Power Schedule.', 520),
+('2025-09-22 19:00:10', 'Active-Com', 'user', 'SYSTEM: [USB Copy] service was stopped.', 520),
+('2025-09-23 07:02:07', 'Active-Com', 'user', 'SYSTEM: System successfully registered [112.134.220.176] to [cont.synology.me] in DDNS server [Synology].', 520);
+EOF
+    else
+        mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -D "${DB_NAME}" << 'EOF'
+INSERT INTO remote_logs (received_at, hostname, facility, message, port) VALUES
+('2025-09-20 12:24:39', 'DiskStation4', 'user', 'Test message from Synology Syslog Client from (112.134.220.176)', 520),
+('2025-09-21 07:01:07', 'Active-Com', 'user', 'SYSTEM: System successfully registered [112.134.220.176] to [cont.synology.me] in DDNS server [Synology].', 520),
+('2025-09-22 11:04:40', 'Active-Com', 'user', 'User [Active] from [192.168.0.47] signed in to [DSM] successfully via [password].', 520),
+('2025-09-22 19:00:01', 'Active-Com', 'user', 'SYSTEM: System start counting down to shutdown. This is triggered by Power Schedule.', 520),
+('2025-09-22 19:00:10', 'Active-Com', 'user', 'SYSTEM: [USB Copy] service was stopped.', 520),
+('2025-09-23 07:02:07', 'Active-Com', 'user', 'SYSTEM: System successfully registered [112.134.220.176] to [cont.synology.me] in DDNS server [Synology].', 520);
+EOF
+    fi
+    print_status "Sample data inserted successfully"
+else
+    print_status "Database already contains ${RECORD_COUNT} records, skipping sample data insertion"
+fi
+echo
+
+# Step 7: Create API directory
+print_step "Step 7: Setting up API directory..."
+if [ -d "$API_DIR" ]; then
+    print_warning "API directory already exists: $API_DIR"
+else
+    if mkdir -p "$API_DIR"; then
+        print_status "API directory created: $API_DIR"
+    else
+        print_error "Failed to create API directory"
+        exit 1
+    fi
+fi
+echo
+
+# Step 8: Create connection.php
+print_step "Step 8: Creating connection.php..."
+cat > "$API_DIR/connection.php" << EOF
+<?php
+/**
+ * Database Connection Configuration
+ * Separate connection file for security and modularity
+ */
+
+// Database configuration
+define('DB_HOST', 'localhost');
+define('DB_USER', 'root');
+define('DB_PASS', '${MYSQL_ROOT_PASSWORD}');
+define('DB_NAME', '${DB_NAME}');
+
+// Secret key for API authentication
+define('API_SECRET_KEY', '${API_SECRET_KEY}');
+
+/**
+ * Get database connection
+ * @return PDO|null
+ */
+function getDBConnection() {
+    try {
+        \$dsn = "mysql:host=" . DB_HOST . ";dbname=" . DB_NAME . ";charset=utf8mb4";
+        \$options = [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_EMULATE_PREPARES => false,
+            PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES utf8mb4"
+        ];
+        
+        \$pdo = new PDO(\$dsn, DB_USER, DB_PASS, \$options);
+        return \$pdo;
+    } catch (PDOException \$e) {
+        error_log("Database connection failed: " . \$e->getMessage());
+        return null;
+    }
 }
 
-# Fix MySQL authentication
-fix_mysql_authentication() {
-    print_header "CONFIGURING MYSQL AUTHENTICATION"
+/**
+ * Validate API secret key
+ * @param string \$providedKey
+ * @return bool
+ */
+function validateAPIKey(\$providedKey) {
+    return hash_equals(API_SECRET_KEY, \$providedKey);
+}
+?>
+EOF
+
+if [ -f "$API_DIR/connection.php" ]; then
+    print_status "connection.php created successfully"
+else
+    print_error "Failed to create connection.php"
+    exit 1
+fi
+echo
+
+# Step 9: Create api.php
+print_step "Step 9: Creating api.php..."
+cat > "$API_DIR/api.php" << 'EOF'
+<?php
+/**
+ * Remote Logs API Endpoint
+ * Accepts POST requests with secret key authentication
+ * Returns log records after specified LAST_ID
+ */
+
+// Include database connection
+require_once 'connection.php';
+
+// Set proper headers for API response
+header('Content-Type: application/json');
+header('Access-Control-Allow-Origin: *');
+header('Access-Control-Allow-Methods: POST');
+header('Access-Control-Allow-Headers: Content-Type');
+
+// Only accept POST requests
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    http_response_code(405);
+    echo json_encode([
+        'success' => false,
+        'error' => 'Method not allowed. Only POST requests are accepted.',
+        'code' => 'METHOD_NOT_ALLOWED'
+    ]);
+    exit;
+}
+
+// Function to send JSON response
+function sendResponse($success, $data = null, $error = null, $code = null, $httpCode = 200) {
+    http_response_code($httpCode);
+    $response = ['success' => $success];
     
-    print_status "Changing MySQL authentication method to mysql_native_password..."
-    
-    mysql -u root -p"$MYSQL_PASSWORD" -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '$MYSQL_PASSWORD'; FLUSH PRIVILEGES;" 2>/dev/null || {
-        print_warning "Could not change authentication method (may already be configured)"
+    if ($data !== null) {
+        $response['data'] = $data;
     }
     
-    print_status "MySQL authentication configured"
+    if ($error !== null) {
+        $response['error'] = $error;
+    }
+    
+    if ($code !== null) {
+        $response['code'] = $code;
+    }
+    
+    echo json_encode($response, JSON_PRETTY_PRINT);
+    exit;
 }
 
-# Update system packages
-update_system() {
-    print_header "UPDATING SYSTEM PACKAGES"
-    apt update
-    print_status "System packages updated successfully"
+try {
+    // Get POST data
+    $input = file_get_contents('php://input');
+    $data = json_decode($input, true);
+    
+    // Check if JSON is valid
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        sendResponse(false, null, 'Invalid JSON format', 'INVALID_JSON', 400);
+    }
+    
+    // Validate required fields
+    if (!isset($data['secret_key'])) {
+        sendResponse(false, null, 'Secret key is required', 'MISSING_SECRET_KEY', 400);
+    }
+    
+    // Validate secret key
+    if (!validateAPIKey($data['secret_key'])) {
+        sendResponse(false, null, 'Invalid secret key', 'INVALID_SECRET_KEY', 401);
+    }
+    
+    // Get database connection
+    $pdo = getDBConnection();
+    if (!$pdo) {
+        sendResponse(false, null, 'Database connection failed', 'DB_CONNECTION_ERROR', 500);
+    }
+    
+    // Check if LAST_ID is provided
+    $lastId = isset($data['last_id']) ? (int)$data['last_id'] : 0;
+    
+    // Set default limit to prevent overwhelming responses
+    $limit = isset($data['limit']) ? min((int)$data['limit'], 1000) : 100;
+    
+    // Prepare SQL query (using ? placeholders to avoid binding issues with LIMIT)
+    if ($lastId > 0) {
+        $sql = "SELECT id, received_at, hostname, facility, message, port 
+                FROM remote_logs 
+                WHERE id > ? 
+                ORDER BY id ASC 
+                LIMIT ?";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([$lastId, $limit]);
+    } else {
+        $sql = "SELECT id, received_at, hostname, facility, message, port 
+                FROM remote_logs 
+                ORDER BY id ASC 
+                LIMIT ?";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([$limit]);
+    }
+    
+    $records = $stmt->fetchAll();
+    
+    // Get total count for information
+    if ($lastId > 0) {
+        $countStmt = $pdo->prepare("SELECT COUNT(*) as total FROM remote_logs WHERE id > ?");
+        $countStmt->execute([$lastId]);
+    } else {
+        $countStmt = $pdo->query("SELECT COUNT(*) as total FROM remote_logs");
+    }
+    $totalCount = $countStmt->fetch()['total'];
+    
+    // Prepare response data
+    $responseData = [
+        'records' => $records,
+        'count' => count($records),
+        'total_available' => (int)$totalCount,
+        'last_id_requested' => $lastId,
+        'limit' => $limit
+    ];
+    
+    // Add next_last_id if there are records
+    if (!empty($records)) {
+        $responseData['next_last_id'] = end($records)['id'];
+    }
+    
+    sendResponse(true, $responseData);
+    
+} catch (PDOException $e) {
+    error_log("Database error: " . $e->getMessage());
+    sendResponse(false, null, 'Database query failed', 'DB_QUERY_ERROR', 500);
+} catch (Exception $e) {
+    error_log("General error: " . $e->getMessage());
+    sendResponse(false, null, 'Internal server error', 'INTERNAL_ERROR', 500);
 }
+?>
+EOF
 
-# Install required packages
-install_dependencies() {
-    print_header "INSTALLING DEPENDENCIES"
+if [ -f "$API_DIR/api.php" ]; then
+    print_status "api.php created successfully"
+else
+    print_error "Failed to create api.php"
+    exit 1
+fi
+echo
+
+# Step 10: Set proper permissions
+print_step "Step 10: Setting file permissions..."
+if chown -R www-data:www-data "$API_DIR" && chmod -R 644 "$API_DIR"/*.php && chmod 755 "$API_DIR"; then
+    print_status "File permissions set successfully"
+else
+    print_warning "Failed to set some permissions, but continuing..."
+fi
+echo
+
+# Step 11: Enable Apache modules and restart
+print_step "Step 11: Configuring Apache..."
+if a2enmod rewrite >/dev/null 2>&1; then
+    print_status "Apache rewrite module enabled"
+fi
+
+if systemctl restart apache2; then
+    print_status "Apache2 restarted successfully"
+else
+    print_error "Failed to restart Apache2"
+    exit 1
+fi
+echo
+
+# Step 11.1: Configure Firewall for remote access
+print_step "Step 11.1: Configuring firewall for remote API access..."
+
+# Check if UFW is installed
+if command_exists ufw; then
+    print_status "UFW firewall detected"
     
-    print_status "Installing curl..."
-    apt install -y curl
+    # Check if UFW is active
+    UFW_STATUS=$(sudo ufw status | grep -c "Status: active")
     
-    print_status "Installing MySQL Server..."
-    apt install -y mysql-server
+    if [ "$UFW_STATUS" -eq 0 ]; then
+        print_warning "UFW is installed but not active"
+        read -p "Do you want to enable UFW firewall? (y/n): " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            # Enable UFW
+            print_status "Enabling UFW firewall..."
+            
+            # Allow SSH first to prevent lockout
+            sudo ufw allow 22/tcp >/dev/null 2>&1
+            print_status "Allowed SSH (port 22)"
+            
+            # Enable UFW
+            sudo ufw --force enable >/dev/null 2>&1
+            print_status "UFW firewall enabled"
+        else
+            print_warning "UFW not enabled - skipping firewall configuration"
+        fi
+    fi
     
-    print_status "Installing PHP and extensions..."
-    apt install -y php php-mysql php-cli php-curl php-json
+    # Configure firewall rules if UFW is active
+    if sudo ufw status | grep -q "Status: active"; then
+        print_status "Configuring firewall rules..."
+        
+        # Allow HTTP (port 80)
+        if sudo ufw allow 80/tcp >/dev/null 2>&1; then
+            print_status "Allowed HTTP (port 80) for API access"
+        fi
+        
+        # Allow HTTPS (port 443)
+        if sudo ufw allow 443/tcp >/dev/null 2>&1; then
+            print_status "Allowed HTTPS (port 443) for secure API access"
+        fi
+        
+        # Reload firewall
+        sudo ufw reload >/dev/null 2>&1
+        print_status "Firewall rules reloaded"
+        
+        # Show firewall status
+        echo
+        print_status "Current firewall rules:"
+        sudo ufw status numbered | grep -E "(80|443|22)" || true
+    fi
+else
+    print_warning "UFW firewall not installed"
+    print_warning "To install UFW: sudo apt install ufw"
+    print_warning "Remote API access may be blocked by firewall"
+fi
+echo
+
+# Step 12: Test database connection from API
+print_step "Step 12: Testing database connection from API..."
+DB_TEST_RESULT=$(php -r "
+require_once '$API_DIR/connection.php';
+\$pdo = getDBConnection();
+if (\$pdo) {
+    \$stmt = \$pdo->query('SELECT COUNT(*) as count FROM remote_logs');
+    \$result = \$stmt->fetch();
+    echo 'SUCCESS:' . \$result['count'];
+} else {
+    echo 'FAILED';
+}
+" 2>/dev/null)
+
+if [[ "$DB_TEST_RESULT" == SUCCESS:* ]]; then
+    RECORD_COUNT=${DB_TEST_RESULT#SUCCESS:}
+    print_status "Database connection test passed (${RECORD_COUNT} records found)"
+else
+    print_error "Database connection test failed"
+    exit 1
+fi
+echo
+
+# Step 13: Test API endpoint
+print_step "Step 13: Testing API endpoint..."
+sleep 2  # Give Apache a moment to fully restart
+
+if test_api; then
+    print_status "API endpoint test passed"
+else
+    print_warning "API endpoint test failed, checking manually..."
     
-    print_status "Installing Apache (if needed)..."
-    apt install -y apache2
+    # Manual test with more details
+    MANUAL_TEST=$(curl -s -w "\n%{http_code}" -X POST http://localhost/api/api.php \
+        -H "Content-Type: application/json" \
+        -d "{\"secret_key\": \"${API_SECRET_KEY}\"}" 2>/dev/null)
     
-    print_status "Installing Python3 for JSON parsing..."
-    apt install -y python3
+    HTTP_CODE=$(echo "$MANUAL_TEST" | tail -n1)
+    RESPONSE_BODY=$(echo "$MANUAL_TEST" | head -n -1)
     
-    print_status "Enabling PHP curl extension..."
-    # Detect PHP version dynamically
-    PHP_VERSION=$(php -r "echo PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;")
-    PHP_CLI_CONF_DIR="/etc/php/${PHP_VERSION}/cli/conf.d"
-    
-    if [ -d "$PHP_CLI_CONF_DIR" ]; then
-        echo "extension=curl" > "${PHP_CLI_CONF_DIR}/20-curl.ini"
-        print_status "PHP curl extension enabled for PHP $PHP_VERSION"
+    if [ "$HTTP_CODE" = "200" ]; then
+        if echo "$RESPONSE_BODY" | grep -q '"success": true'; then
+            print_status "API endpoint test passed on retry"
+        else
+            print_error "API returned success=false: $RESPONSE_BODY"
+            exit 1
+        fi
     else
-        print_warning "PHP CLI config directory not found, curl extension may already be enabled"
-    fi
-    
-    systemctl restart apache2
-    print_status "All dependencies installed successfully"
-}
-
-# Create database and tables
-setup_database() {
-    print_header "SETTING UP DATABASE"
-    
-    print_status "Creating database and tables..."
-    
-    # Create SQL file for database setup
-    cat > /tmp/logger_db_setup.sql << 'EOF'
--- Create database
-CREATE DATABASE IF NOT EXISTS logger_db;
-USE logger_db;
-
--- 1. Collectors table
-CREATE TABLE IF NOT EXISTS collectors (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
-    url VARCHAR(500) NOT NULL,
-    secret_key VARCHAR(255) NOT NULL,
-    last_fetched_id INT DEFAULT 0,
-    is_active BOOLEAN DEFAULT TRUE,
-    project_id INT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-);
-
--- 2. Devices table
-CREATE TABLE IF NOT EXISTS devices (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    collector_id INT NOT NULL,
-    port INT NOT NULL,
-    device_name VARCHAR(255) NOT NULL,
-    status BOOLEAN DEFAULT 1,
-    log_quota INT DEFAULT 10000,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    FOREIGN KEY (collector_id) REFERENCES collectors(id) ON DELETE CASCADE,
-    UNIQUE KEY unique_collector_port (collector_id, port)
-);
-
--- 3. Log mirror table
-CREATE TABLE IF NOT EXISTS log_mirror (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    collector_id INT NOT NULL,
-    original_log_id INT NOT NULL,
-    received_at DATETIME NOT NULL,
-    hostname VARCHAR(255),
-    facility VARCHAR(100),
-    message TEXT,
-    port INT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (collector_id) REFERENCES collectors(id) ON DELETE CASCADE,
-    UNIQUE KEY unique_collector_log (collector_id, original_log_id)
-);
-
--- 4. Message patterns table
-CREATE TABLE IF NOT EXISTS message_patterns (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
-    description TEXT,
-    pattern_regex VARCHAR(1000) NOT NULL,
-    is_active BOOLEAN DEFAULT TRUE,
-    priority INT DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-);
-
--- 5. Field extraction rules table
-CREATE TABLE IF NOT EXISTS field_extraction_rules (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    pattern_id INT NOT NULL,
-    field_name VARCHAR(100) NOT NULL,
-    regex_pattern VARCHAR(500) NOT NULL,
-    regex_group_index INT DEFAULT 1,
-    default_value VARCHAR(255),
-    is_required BOOLEAN DEFAULT FALSE,
-    data_type ENUM('string', 'integer', 'float', 'datetime', 'json') DEFAULT 'string',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (pattern_id) REFERENCES message_patterns(id) ON DELETE CASCADE
-);
-
--- 6. Parsed logs table
-CREATE TABLE IF NOT EXISTS parsed_logs (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    log_mirror_id INT NOT NULL,
-    pattern_id INT,
-    event_type VARCHAR(100),
-    file_path VARCHAR(1000),
-    file_folder_type VARCHAR(50),
-    file_size VARCHAR(100),
-    username VARCHAR(255),
-    user_ip VARCHAR(45),
-    source_path VARCHAR(1000),
-    destination_path VARCHAR(1000),
-    additional_data JSON,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (log_mirror_id) REFERENCES log_mirror(id) ON DELETE CASCADE,
-    FOREIGN KEY (pattern_id) REFERENCES message_patterns(id) ON DELETE SET NULL,
-    UNIQUE KEY unique_log_pattern (log_mirror_id, pattern_id)
-);
-
--- 7. System actions table
-CREATE TABLE IF NOT EXISTS system_actions (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    log_id INT NOT NULL,
-    collector_id INT NOT NULL,
-    action_description TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (log_id) REFERENCES log_mirror(id) ON DELETE CASCADE,
-    FOREIGN KEY (collector_id) REFERENCES collectors(id) ON DELETE CASCADE
-);
-
--- Insert default message patterns
-INSERT IGNORE INTO message_patterns (id, name, description, pattern_regex, priority) VALUES
-(1, 'SYSTEM Message Pattern', 'Matches SYSTEM: messages for system actions and events', '/^SYSTEM:\\s*(.+)$/', 15),
-(2, 'File Operations Pattern', 'Matches file/folder operations', '/Event:\\s*(\\w+),\\s*Path:\\s*(.+?)(?:\\s*->\\s*(.+?))?,\\s*File\\/Folder:\\s*(\\w+),\\s*Size:\\s*(.+?),\\s*User:\\s*(.+?),\\s*IP:\\s*(.+)$/', 10),
-(3, 'System Administrative Pattern', 'Matches system admin messages', '/^(.+?):#011(.+)$/', 5),
-(4, 'User Login Pattern', 'Matches user login messages', '/User\\s+\\[(.+?)\\]\\s+from\\s+\\[(.+?)\\]\\s+signed\\s+in\\s+to\\s+\\[(.+?)\\]\\s+successfully\\s+via\\s+\\[(.+?)\\]/', 12),
-(5, 'Test Message Pattern', 'Matches test messages', '/Test\\s+message\\s+from\\s+Synology\\s+Syslog\\s+Client\\s+from\\s+\\((.+?)\\)/', 8);
-
--- Insert field extraction rules
-INSERT IGNORE INTO field_extraction_rules (pattern_id, field_name, regex_pattern, regex_group_index, default_value, is_required) VALUES
--- SYSTEM Message Pattern
-(1, 'event_type', '', 1, 'system', 1),
-(1, 'action_description', '/^SYSTEM:\\s*(.+)$/', 1, NULL, 1),
--- File Operations Pattern
-(2, 'event_type', '/Event:\\s*(\\w+)/', 1, NULL, 1),
-(2, 'file_path', '/Path:\\s*(.+?)(?:\\s*->|,\\s*File)/', 1, NULL, 1),
-(2, 'destination_path', '/Path:\\s*.+?\\s*->\\s*(.+?),\\s*File/', 1, NULL, 0),
-(2, 'file_folder_type', '/File\\/Folder:\\s*(\\w+)/', 1, NULL, 1),
-(2, 'file_size', '/Size:\\s*(.+?),\\s*User/', 1, NULL, 0),
-(2, 'username', '/User:\\s*(.+?),\\s*IP/', 1, NULL, 1),
-(2, 'user_ip', '/IP:\\s*(.+)$/', 1, NULL, 1),
--- System Administrative Pattern
-(3, 'username', '/^(.+?):#011/', 1, NULL, 1),
-(3, 'admin_action', '/#011(.+)$/', 1, NULL, 1),
-(3, 'event_type', '', 1, 'system_admin', 0),
--- User Login Pattern
-(4, 'event_type', '', 1, 'user_login', 1),
-(4, 'username', '/User\\s+\\[(.+?)\\]/', 1, NULL, 1),
-(4, 'user_ip', '/from\\s+\\[(.+?)\\]/', 1, NULL, 1),
-(4, 'service', '/signed\\s+in\\s+to\\s+\\[(.+?)\\]/', 1, NULL, 0),
-(4, 'auth_method', '/via\\s+\\[(.+?)\\]/', 1, NULL, 0),
--- Test Message Pattern
-(5, 'event_type', '', 1, 'test_message', 1),
-(5, 'source_ip', '/from\\s+\\((.+?)\\)/', 1, NULL, 0);
-EOF
-
-    # Execute main SQL file
-    mysql -u "$DB_USER" -p"$MYSQL_PASSWORD" < /tmp/logger_db_setup.sql
-    
-    # Create indexes separately
-    print_status "Creating database indexes..."
-    cat > /tmp/create_indexes.sql << 'EOF'
-USE logger_db;
-CREATE INDEX idx_log_mirror_collector ON log_mirror(collector_id);
-CREATE INDEX idx_log_mirror_port ON log_mirror(port);
-CREATE INDEX idx_log_mirror_hostname ON log_mirror(hostname);
-CREATE INDEX idx_log_mirror_received_at ON log_mirror(received_at);
-CREATE INDEX idx_parsed_logs_event_type ON parsed_logs(event_type);
-CREATE INDEX idx_parsed_logs_username ON parsed_logs(username);
-CREATE INDEX idx_system_actions_collector ON system_actions(collector_id);
-CREATE INDEX idx_devices_status ON devices(status);
-EOF
-
-    mysql -u "$DB_USER" -p"$MYSQL_PASSWORD" < /tmp/create_indexes.sql 2>/dev/null || true
-    
-    rm /tmp/logger_db_setup.sql /tmp/create_indexes.sql
-    
-    print_status "Database and tables created successfully"
-}
-
-# Setup project files
-setup_project_files() {
-    print_header "SETTING UP PROJECT FILES"
-    
-    print_status "Ensuring project directory exists..."
-    mkdir -p "$PROJECT_DIR"
-    cd "$PROJECT_DIR"
-    
-    # Update connection.php with actual password
-    if [ -f "connection.php" ]; then
-        print_status "Updating database connection..."
-        # Show the password length for debugging (without revealing the actual password)
-        print_status "Updating connection.php with password (length: ${#ESCAPED_MYSQL_PASSWORD})"
-        
-        # Use the escaped password to handle special characters
-        sed -i "s/\$password = '';/\$password = '$ESCAPED_MYSQL_PASSWORD';/g" connection.php
-        
-        # Debug: Show the result
-        grep "\$password" connection.php | print_status "Updated connection line:"
-    fi
-    
-    # Update log_fetcher_cron.sh path - replace entire cd line
-    if [ -f "log_fetcher_cron.sh" ]; then
-        print_status "Updating cron script paths..."
-        # Replace any cd command with the correct PROJECT_DIR
-        sed -i "s|^cd .*|cd $PROJECT_DIR|g" log_fetcher_cron.sh
-    fi
-    
-    print_status "Setting proper file permissions..."
-    chown -R www-data:www-data "$PROJECT_DIR"
-    chmod -R 755 "$PROJECT_DIR"
-    
-    if [ -f "$PROJECT_DIR/log_fetcher_cron.sh" ]; then
-        chmod +x "$PROJECT_DIR/log_fetcher_cron.sh"
-    fi
-    
-    print_status "Project files configured successfully"
-}
-
-# Setup logging directory
-setup_logging() {
-    print_header "SETTING UP LOGGING"
-    
-    mkdir -p "$LOG_DIR"
-    chown www-data:www-data "$LOG_DIR"
-    chmod 755 "$LOG_DIR"
-    
-    cat > /etc/logrotate.d/logger-system << EOF
-$LOG_DIR/*.log {
-    daily
-    missingok
-    rotate 30
-    compress
-    delaycompress
-    notifempty
-    copytruncate
-}
-EOF
-    
-    print_status "Logging setup completed"
-}
-
-# Setup cron job
-setup_cron() {
-    print_header "SETTING UP CRON JOB"
-    
-    # Remove old cron jobs
-    crontab -l 2>/dev/null | grep -v "log_fetcher_cron.sh" | crontab - 2>/dev/null || true
-    
-    # Add new cron job with correct path
-    (crontab -l 2>/dev/null; echo "* * * * * $PROJECT_DIR/log_fetcher_cron.sh") | crontab -
-    print_status "Cron job added - will run every minute"
-    
-    systemctl enable cron
-    systemctl start cron
-    
-    print_status "Cron job setup completed"
-}
-
-# Test installation
-test_installation() {
-    print_header "TESTING INSTALLATION"
-    
-    print_status "Testing database connection..."
-    cd "$PROJECT_DIR"
-    
-    # First, let's check what's in the connection.php file
-    print_status "Checking connection.php content:"
-    grep "\$password" connection.php | print_status "  "
-    
-    if timeout 5 php -r "require 'connection.php'; echo 'Connected\n';" 2>/dev/null; then
-        print_success "Database connection test passed"
-    else
-        print_error "Database connection test failed"
-        print_status "Let's test the connection details manually:"
-        # Test with PHP to get more detailed error information
-        php -r "
-        require 'connection.php';
-        try {
-            \$pdo = new PDO(\"mysql:host=\$host;dbname=\$dbname\", \$username, \$password);
-            echo \"Connection successful\n\";
-        } catch (PDOException \$e) {
-            echo \"Connection failed: \" . \$e->getMessage() . \"\n\";
-        }
-        " 2>&1 | while read line; do print_error "  \$line"; done
-        
+        print_error "API returned HTTP $HTTP_CODE: $RESPONSE_BODY"
         exit 1
     fi
-    
-    if [ -f "$PROJECT_DIR/log_fetcher_cron.sh" ]; then
-        print_status "Testing cron script..."
-        timeout 30 bash "$PROJECT_DIR/log_fetcher_cron.sh" || print_warning "Cron script test timed out"
-    fi
-    
-    print_success "Installation tests completed"
-}
+fi
+echo
 
-# Save activation info
-save_activation_info() {
-    print_header "SAVING ACTIVATION INFO"
-    
-    cat > "$PROJECT_DIR/.activation_info" << EOF
-# Logger Backend Activation Information
-# Generated on: $(date)
-ACTIVATION_KEY=$ACTIVATION_KEY
-PROJECT_ID=$PROJECT_ID
-LOGGER_IP=$LOGGER_IP
-ASSIGNED_PORTS=${COLLECTOR_PORTS[*]}
+# Step 14: Create test script
+print_step "Step 14: Creating test script..."
+cat > "$API_DIR/test_api.sh" << EOF
+#!/bin/bash
+
+echo "Testing Remote Logs API..."
+echo "=========================="
+echo
+
+# Test 1: Get all records
+echo "Test 1: Getting all records"
+curl -X POST http://localhost/api/api.php \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "secret_key": "${API_SECRET_KEY}"
+  }' | jq '.'
+echo
+echo
+
+# Test 2: Get records after ID 42
+echo "Test 2: Getting records after ID 42"
+curl -X POST http://localhost/api/api.php \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "secret_key": "${API_SECRET_KEY}",
+    "last_id": 42
+  }' | jq '.'
+echo
+echo
+
+# Test 3: Get limited records
+echo "Test 3: Getting limited records (limit: 2)"
+curl -X POST http://localhost/api/api.php \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "secret_key": "${API_SECRET_KEY}",
+    "limit": 2
+  }' | jq '.'
+echo
+echo
+
+# Test 4: Test with wrong secret key (should fail)
+echo "Test 4: Testing with wrong secret key (should fail)"
+curl -X POST http://localhost/api/api.php \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "secret_key": "wrong_key"
+  }' | jq '.'
+echo
+
+echo "API testing completed!"
 EOF
-    
-    chmod 600 "$PROJECT_DIR/.activation_info"
-    print_status "Activation info saved to $PROJECT_DIR/.activation_info"
-}
 
-# Display final information
-display_info() {
-    print_header "INSTALLATION COMPLETED"
-    
-    echo -e "${GREEN}Logger System has been successfully installed and activated!${NC}"
-    echo
-    echo "Activation Details:"
-    echo "- Activation Key: $ACTIVATION_KEY"
-    echo "- Project ID: $PROJECT_ID"
-    echo "- Logger IP: $LOGGER_IP"
-    echo "- Assigned Ports: ${COLLECTOR_PORTS[*]}"
-    echo
-    echo "System Configuration:"
-    echo "- Project Directory: $PROJECT_DIR"
-    echo "- Database Name: $DB_NAME"
-    echo "- Log Directory: $LOG_DIR"
-    echo "- Cron Job: Running every minute"
-    echo
-    echo "Next Steps:"
-    echo "1. Add your API collectors to the database"
-    echo "2. Monitor logs: tail -f $LOG_DIR/log_fetcher.log"
-    echo "3. Check errors: tail -f $LOG_DIR/log_fetcher_error.log"
-    echo "4. View activation info: cat $PROJECT_DIR/.activation_info"
-    echo
-}
+chmod +x "$API_DIR/test_api.sh"
+print_status "Test script created: $API_DIR/test_api.sh"
+echo
 
-# Main execution
-main() {
-    print_header "LOGGER SYSTEM INSTALLER WITH ACTIVATION"
-    
-    check_root
-    
-    # Check and install curl if needed
-    if ! command -v curl &> /dev/null; then
-        print_status "Installing curl for activation validation..."
-        apt update -qq
-        apt install -y curl > /dev/null 2>&1
-        print_status "curl installed successfully"
+# Step 15: Final verification
+print_step "Step 15: Final system verification..."
+
+# Check all services
+SERVICES_OK=true
+
+if ! systemctl is-active --quiet apache2; then
+    print_error "Apache2 service is not running"
+    SERVICES_OK=false
+else
+    print_status "Apache2 service: Running"
+fi
+
+if ! systemctl is-active --quiet mysql; then
+    print_error "MySQL service is not running"
+    SERVICES_OK=false
+else
+    print_status "MySQL service: Running"
+fi
+
+# Check database
+if database_exists && table_exists; then
+    if [ -z "${MYSQL_ROOT_PASSWORD}" ]; then
+        FINAL_RECORD_COUNT=$(mysql -u root -D "${DB_NAME}" -se "SELECT COUNT(*) FROM remote_logs;" 2>/dev/null)
     else
-        print_status "curl is already installed"
+        FINAL_RECORD_COUNT=$(mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -D "${DB_NAME}" -se "SELECT COUNT(*) FROM remote_logs;" 2>/dev/null)
     fi
-    
-    # Check and install python3 if needed
-    if ! command -v python3 &> /dev/null; then
-        print_status "Installing python3 for JSON parsing..."
-        apt install -y python3 > /dev/null 2>&1
-        print_status "python3 installed successfully"
-    else
-        print_status "python3 is already installed"
-    fi
-    
-    get_machine_ip
-    get_activation_key
-    get_collector_ip
-    validate_activation
-    
-    echo
-    read -p "Do you want to proceed with installation? (y/n): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        print_warning "Installation cancelled by user"
-        exit 0
-    fi
-    
-    get_mysql_password
-    
-    update_system
-    install_dependencies
-    fix_mysql_authentication
-    setup_database
-    setup_project_files
-    setup_logging
-    setup_cron
-    test_installation
-    save_activation_info
-    display_info
-    
-    print_success "Installation completed successfully!"
-}
+    print_status "Database: OK (${FINAL_RECORD_COUNT} records)"
+else
+    print_error "Database or table is missing"
+    SERVICES_OK=false
+fi
 
-# Run main function
-main "$@"
+# Check API files
+if [ -f "$API_DIR/connection.php" ] && [ -f "$API_DIR/api.php" ]; then
+    print_status "API files: OK"
+else
+    print_error "API files are missing"
+    SERVICES_OK=false
+fi
+
+echo
+
+# Final status
+if [ "$SERVICES_OK" = true ]; then
+    echo -e "${GREEN}================================${NC}"
+    echo -e "${GREEN}   INSTALLATION COMPLETED!      ${NC}"
+    echo -e "${GREEN}================================${NC}"
+    echo
+    print_status "All components installed and configured successfully!"
+    echo
+    SERVER_IP=$(hostname -I | awk '{print $1}')
+    echo -e "${BLUE}Server IP:${NC} ${SERVER_IP}"
+    echo -e "${BLUE}API Endpoint (Local):${NC} http://localhost/api/api.php"
+    echo -e "${BLUE}API Endpoint (Remote):${NC} http://${SERVER_IP}/api/api.php"
+    echo -e "${BLUE}Secret Key:${NC} ${API_SECRET_KEY}"
+    echo -e "${BLUE}Database:${NC} ${DB_NAME} (${FINAL_RECORD_COUNT} sample records)"
+    echo -e "${BLUE}Database User:${NC} root (empty password)"
+    echo -e "${BLUE}Test Script:${NC} ${API_DIR}/test_api.sh"
+    echo
+    echo -e "${YELLOW}Quick Test (Local):${NC}"
+    echo "curl -X POST http://localhost/api/api.php \\"
+    echo "  -H \"Content-Type: application/json\" \\"
+    echo "  -d '{\"secret_key\": \"${API_SECRET_KEY}\"}'"
+    echo
+    echo -e "${YELLOW}Quick Test (Remote):${NC}"
+    echo "curl -X POST http://${SERVER_IP}/api/api.php \\"
+    echo "  -H \"Content-Type: application/json\" \\"
+    echo "  -d '{\"secret_key\": \"${API_SECRET_KEY}\"}'"
+    echo
+    echo -e "${YELLOW}Run full tests:${NC} bash ${API_DIR}/test_api.sh"
+    echo
+    
+    # Show firewall status
+    if command_exists ufw && sudo ufw status | grep -q "Status: active"; then
+        echo -e "${GREEN}Firewall Status:${NC}"
+        sudo ufw status | grep -E "(Status|80|443)" || true
+        echo
+    fi
+    
+    print_status "Installation completed successfully!"
+    echo
+else
+    echo -e "${RED}================================${NC}"
+    echo -e "${RED}   INSTALLATION FAILED!         ${NC}"
+    echo -e "${RED}================================${NC}"
+    echo
+    print_error "Some components failed to install properly"
+    print_error "Please check the error messages above"
+    exit 1
+fi

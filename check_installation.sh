@@ -4,7 +4,24 @@ echo "=== Logger System Health Check ==="
 echo
 
 echo "1. Checking Database Connection..."
-php -r "require './connection.php'; echo 'OK\n';" 2>&1 || echo "FAILED"
+# First check what's in the connection.php file
+echo "  Checking connection.php content:"
+grep "\$password\|\$username\|\$host\|\$dbname" connection.php | sed 's/^/    /'
+
+# Test with PHP to get more detailed error information
+php -r "
+require './connection.php';
+echo 'Host: ' . \$host . '\n';
+echo 'Database: ' . \$dbname . '\n';
+echo 'Username: ' . \$username . '\n';
+echo 'Password length: ' . strlen(\$password) . '\n';
+try {
+    \$pdo = new PDO(\"mysql:host=\$host;dbname=\$dbname\", \$username, \$password);
+    echo \"Connection successful\n\";
+} catch (PDOException \$e) {
+    echo \"Connection failed: \" . \$e->getMessage() . \"\n\";
+}
+" 2>&1 || echo "FAILED"
 
 echo "2. Checking Cron Job..."
 crontab -l | grep -q "log_fetcher" && echo "OK" || echo "NOT FOUND"

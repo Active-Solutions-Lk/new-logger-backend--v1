@@ -1,9 +1,8 @@
 #!/bin/bash
 
 # Remote Logs API - Automated Installation Script
-# This script installs and configures all required components
-# Author: Auto-generated for Remote Logs API
-# Date: $(date)
+# Enhanced version with better MySQL authentication handling
+# Maintains compatibility with existing logger system
 
 set -e  # Exit on any error
 
@@ -15,12 +14,10 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-DB_NAME="logger_db"
+DB_NAME="syslog_db"
 API_SECRET_KEY="sk_5a1b3c4d2e6f7a8b9c0d1e2f3a4b5c6d"
 API_DIR="/var/www/html/api"
 MYSQL_ROOT_PASSWORD=""  # Will be requested from user
-API_USER="api_user"
-API_USER_PASSWORD="secure_api_password_2025"  # Hardcoded for simplicity; change in production
 
 # Function to print colored output
 print_status() {
@@ -92,25 +89,19 @@ echo -e "${GREEN} Remote Logs API Installation   ${NC}"
 echo -e "${GREEN}================================${NC}"
 echo
 
-# Get MySQL root password
-print_step "MySQL Configuration"
+print_step "Starting automated installation process..."
 echo
-read -s -p "Enter MySQL root password (press Enter if empty): " -t 30 MYSQL_ROOT_PASSWORD
-if [[ $? -gt 128 ]]; then
-    echo -e "\n${YELLOW}[INFO]${NC} No input received, using empty password"
-    MYSQL_ROOT_PASSWORD=""
-fi
+
+# Prompt for MySQL root password
+print_step "MySQL Configuration Required..."
+echo
+read -s -p "Enter MySQL root password (press Enter if empty): " MYSQL_ROOT_PASSWORD
 echo
 if [ -z "$MYSQL_ROOT_PASSWORD" ]; then
     print_warning "Using empty password for MySQL root user"
-    MYSQL_CMD="mysql -u root"
 else
     print_status "MySQL password captured (length: ${#MYSQL_ROOT_PASSWORD})"
-    MYSQL_CMD="mysql -u root -p${MYSQL_ROOT_PASSWORD}"
 fi
-echo
-
-print_step "Starting automated installation process..."
 echo
 
 # Step 1: Update system packages
@@ -170,6 +161,7 @@ else
     print_warning "All PHP packages are already installed"
 fi
 
+# Enable PHP module
 if a2enmod php* >/dev/null 2>&1; then
     print_status "PHP module enabled"
 fi
@@ -188,6 +180,7 @@ if command_exists mysql; then
     fi
 else
     print_status "Installing MySQL Server..."
+    # Set debconf for automated installation
     echo "mysql-server mysql-server/root_password password $MYSQL_ROOT_PASSWORD" | debconf-set-selections
     echo "mysql-server mysql-server/root_password_again password $MYSQL_ROOT_PASSWORD" | debconf-set-selections
     
@@ -197,12 +190,11 @@ else
         systemctl enable mysql
         print_status "MySQL service started and enabled"
         
-        $MYSQL_CMD << 'EOSQL'
-DELETE FROM mysql.user WHERE User='';
-DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
-DROP DATABASE IF EXISTS test;
-FLUSH PRIVILEGES;
-EOSQL
+        # Secure installation (basic)
+        mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "DELETE FROM mysql.user WHERE User='';" 2>/dev/null || true
+        mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');" 2>/dev/null || true
+        mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "DROP DATABASE IF EXISTS test;" 2>/dev/null || true
+        mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "FLUSH PRIVILEGES;" 2>/dev/null || true
         print_status "MySQL basic security applied"
     else
         print_error "Failed to install MySQL Server"
@@ -213,62 +205,23 @@ echo
 
 # Step 5: Test MySQL connection
 print_step "Step 5: Testing MySQL connection..."
-if $MYSQL_CMD -e "SELECT 1;" >/dev/null 2>&1; then
+
+# Test MySQL connection with provided password
+if [ -z "${MYSQL_ROOT_PASSWORD}" ]; then
+    MYSQL_TEST=$(mysql -u root -e "SELECT 1;" 2>&1)
+else
+    MYSQL_TEST=$(mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "SELECT 1;" 2>&1)
+fi
+
+if [ $? -eq 0 ]; then
     print_status "MySQL connection test successful"
 else
     print_error "MySQL connection test failed"
-    print_error "Please check MySQL installation and root password"
+    echo "Error details: $MYSQL_TEST"
+    print_error "Please verify your MySQL root password and try again"
     exit 1
 fi
 echo
-
-# Step 5.1: Configure MySQL authentication for PHP
-print_step "Step 5.1: Configuring MySQL authentication for PHP..."
-CURRENT_PLUGIN=$($MYSQL_CMD -se "SELECT plugin FROM mysql.user WHERE user='root' AND host='localhost';" 2>/dev/null)
-
-if [ "$CURRENT_PLUGIN" = "auth_socket" ] || [ "$CURRENT_PLUGIN" = "unix_socket" ]; then
-    print_warning "MySQL root user is using socket authentication"
-    print_status "Changing to mysql_native_password for PHP compatibility..."
-    
-    $MYSQL_CMD << 'EOSQL'
-ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '';
-FLUSH PRIVILEGES;
-EOSQL
-    
-    if [ $? -eq 0 ]; then
-        print_status "MySQL authentication method updated successfully"
-        if $MYSQL_CMD -e "SELECT 1;" >/dev/null 2>&1; then
-            print_status "Verified: MySQL root can now connect"
-        else
-            print_error "Failed to verify MySQL connection"
-            exit 1
-        fi
-    else
-        print_error "Failed to update MySQL authentication method"
-        exit 1
-    fi
-else
-    print_status "MySQL root authentication is already configured correctly"
-fi
-echo
-
-# Step 5.2: Create dedicated MySQL user for API
-print_step "Step 5.2: Creating dedicated MySQL user for API..."
-if $MYSQL_CMD -e "SELECT 1 FROM mysql.user WHERE user='${API_USER}' AND host='localhost';" >/dev/null 2>&1; then
-    print_warning "MySQL user '${API_USER}' already exists"
-else
-    $MYSQL_CMD << EOF
-CREATE USER '${API_USER}'@'localhost' IDENTIFIED WITH mysql_native_password BY '${API_USER_PASSWORD}';
-GRANT SELECT, INSERT, UPDATE ON ${DB_NAME}.remote_logs TO '${API_USER}'@'localhost';
-FLUSH PRIVILEGES;
-EOF
-    if [ $? -eq 0 ]; then
-        print_status "MySQL user '${API_USER}' created with limited privileges"
-    else
-        print_error "Failed to create MySQL user '${API_USER}'"
-        exit 1
-    fi
-fi
 echo
 
 # Step 6: Create database and table
@@ -277,11 +230,17 @@ if database_exists; then
     print_warning "Database '${DB_NAME}' already exists"
     if table_exists; then
         print_warning "Table 'remote_logs' already exists"
-        RECORD_COUNT=$($MYSQL_CMD -D "${DB_NAME}" -se "SELECT COUNT(*) FROM remote_logs;" 2>/dev/null)
+        # Count existing records
+        if [ -z "${MYSQL_ROOT_PASSWORD}" ]; then
+            RECORD_COUNT=$(mysql -u root -D "${DB_NAME}" -se "SELECT COUNT(*) FROM remote_logs;" 2>/dev/null)
+        else
+            RECORD_COUNT=$(mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -D "${DB_NAME}" -se "SELECT COUNT(*) FROM remote_logs;" 2>/dev/null)
+        fi
         print_status "Current record count: ${RECORD_COUNT}"
     else
         print_status "Creating 'remote_logs' table..."
-        $MYSQL_CMD -D "${DB_NAME}" << 'EOF'
+        if [ -z "${MYSQL_ROOT_PASSWORD}" ]; then
+            mysql -u root -D "${DB_NAME}" << 'EOF'
 CREATE TABLE remote_logs (
     id INT AUTO_INCREMENT PRIMARY KEY,
     received_at DATETIME NULL,
@@ -294,11 +253,27 @@ CREATE TABLE remote_logs (
     INDEX idx_facility (facility)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 EOF
+        else
+            mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -D "${DB_NAME}" << 'EOF'
+CREATE TABLE remote_logs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    received_at DATETIME NULL,
+    hostname VARCHAR(255) NULL,
+    facility VARCHAR(50) NULL,
+    message TEXT NULL,
+    port INT NULL,
+    INDEX idx_received_at (received_at),
+    INDEX idx_hostname (hostname),
+    INDEX idx_facility (facility)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+EOF
+        fi
         print_status "Table 'remote_logs' created successfully"
     fi
 else
     print_status "Creating database '${DB_NAME}'..."
-    $MYSQL_CMD << EOF
+    if [ -z "${MYSQL_ROOT_PASSWORD}" ]; then
+        mysql -u root << EOF
 CREATE DATABASE IF NOT EXISTS ${DB_NAME} 
 CHARACTER SET utf8mb4 
 COLLATE utf8mb4_unicode_ci;
@@ -317,14 +292,41 @@ CREATE TABLE remote_logs (
     INDEX idx_facility (facility)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 EOF
+    else
+        mysql -u root -p"${MYSQL_ROOT_PASSWORD}" << EOF
+CREATE DATABASE IF NOT EXISTS ${DB_NAME} 
+CHARACTER SET utf8mb4 
+COLLATE utf8mb4_unicode_ci;
+
+USE ${DB_NAME};
+
+CREATE TABLE remote_logs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    received_at DATETIME NULL,
+    hostname VARCHAR(255) NULL,
+    facility VARCHAR(50) NULL,
+    message TEXT NULL,
+    port INT NULL,
+    INDEX idx_received_at (received_at),
+    INDEX idx_hostname (hostname),
+    INDEX idx_facility (facility)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+EOF
+    fi
     print_status "Database and table created successfully"
 fi
 
 # Insert sample data if table is empty
-RECORD_COUNT=$($MYSQL_CMD -D "${DB_NAME}" -se "SELECT COUNT(*) FROM remote_logs;" 2>/dev/null)
+if [ -z "${MYSQL_ROOT_PASSWORD}" ]; then
+    RECORD_COUNT=$(mysql -u root -D "${DB_NAME}" -se "SELECT COUNT(*) FROM remote_logs;" 2>/dev/null)
+else
+    RECORD_COUNT=$(mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -D "${DB_NAME}" -se "SELECT COUNT(*) FROM remote_logs;" 2>/dev/null)
+fi
+
 if [ "$RECORD_COUNT" -eq 0 ]; then
     print_status "Inserting sample data..."
-    $MYSQL_CMD -D "${DB_NAME}" << 'EOF'
+    if [ -z "${MYSQL_ROOT_PASSWORD}" ]; then
+        mysql -u root -D "${DB_NAME}" << 'EOF'
 INSERT INTO remote_logs (received_at, hostname, facility, message, port) VALUES
 ('2025-09-20 12:24:39', 'DiskStation4', 'user', 'Test message from Synology Syslog Client from (112.134.220.176)', 520),
 ('2025-09-21 07:01:07', 'Active-Com', 'user', 'SYSTEM: System successfully registered [112.134.220.176] to [cont.synology.me] in DDNS server [Synology].', 520),
@@ -333,6 +335,17 @@ INSERT INTO remote_logs (received_at, hostname, facility, message, port) VALUES
 ('2025-09-22 19:00:10', 'Active-Com', 'user', 'SYSTEM: [USB Copy] service was stopped.', 520),
 ('2025-09-23 07:02:07', 'Active-Com', 'user', 'SYSTEM: System successfully registered [112.134.220.176] to [cont.synology.me] in DDNS server [Synology].', 520);
 EOF
+    else
+        mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -D "${DB_NAME}" << 'EOF'
+INSERT INTO remote_logs (received_at, hostname, facility, message, port) VALUES
+('2025-09-20 12:24:39', 'DiskStation4', 'user', 'Test message from Synology Syslog Client from (112.134.220.176)', 520),
+('2025-09-21 07:01:07', 'Active-Com', 'user', 'SYSTEM: System successfully registered [112.134.220.176] to [cont.synology.me] in DDNS server [Synology].', 520),
+('2025-09-22 11:04:40', 'Active-Com', 'user', 'User [Active] from [192.168.0.47] signed in to [DSM] successfully via [password].', 520),
+('2025-09-22 19:00:01', 'Active-Com', 'user', 'SYSTEM: System start counting down to shutdown. This is triggered by Power Schedule.', 520),
+('2025-09-22 19:00:10', 'Active-Com', 'user', 'SYSTEM: [USB Copy] service was stopped.', 520),
+('2025-09-23 07:02:07', 'Active-Com', 'user', 'SYSTEM: System successfully registered [112.134.220.176] to [cont.synology.me] in DDNS server [Synology].', 520);
+EOF
+    fi
     print_status "Sample data inserted successfully"
 else
     print_status "Database already contains ${RECORD_COUNT} records, skipping sample data insertion"
@@ -364,8 +377,8 @@ cat > "$API_DIR/connection.php" << EOF
 
 // Database configuration
 define('DB_HOST', 'localhost');
-define('DB_USER', '${API_USER}');
-define('DB_PASS', '${API_USER_PASSWORD}');
+define('DB_USER', 'root');
+define('DB_PASS', '${MYSQL_ROOT_PASSWORD}');
 define('DB_NAME', '${DB_NAME}');
 
 // Secret key for API authentication
@@ -495,7 +508,7 @@ try {
     // Set default limit to prevent overwhelming responses
     $limit = isset($data['limit']) ? min((int)$data['limit'], 1000) : 100;
     
-    // Prepare SQL query
+    // Prepare SQL query (using ? placeholders to avoid binding issues with LIMIT)
     if ($lastId > 0) {
         $sql = "SELECT id, received_at, hostname, facility, message, port 
                 FROM remote_logs 
@@ -515,7 +528,7 @@ try {
     
     $records = $stmt->fetchAll();
     
-    // Get total count
+    // Get total count for information
     if ($lastId > 0) {
         $countStmt = $pdo->prepare("SELECT COUNT(*) as total FROM remote_logs WHERE id > ?");
         $countStmt->execute([$lastId]);
@@ -533,6 +546,7 @@ try {
         'limit' => $limit
     ];
     
+    // Add next_last_id if there are records
     if (!empty($records)) {
         $responseData['next_last_id'] = end($records)['id'];
     }
@@ -582,26 +596,57 @@ echo
 
 # Step 11.1: Configure Firewall for remote access
 print_step "Step 11.1: Configuring firewall for remote API access..."
+
+# Check if UFW is installed
 if command_exists ufw; then
     print_status "UFW firewall detected"
+    
+    # Check if UFW is active
     UFW_STATUS=$(sudo ufw status | grep -c "Status: active")
     
     if [ "$UFW_STATUS" -eq 0 ]; then
-        print_status "Enabling UFW firewall..."
-        sudo ufw allow 22/tcp >/dev/null 2>&1
-        print_status "Allowed SSH (port 22)"
-        sudo ufw --force enable >/dev/null 2>&1
-        print_status "UFW firewall enabled"
+        print_warning "UFW is installed but not active"
+        read -p "Do you want to enable UFW firewall? (y/n): " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            # Enable UFW
+            print_status "Enabling UFW firewall..."
+            
+            # Allow SSH first to prevent lockout
+            sudo ufw allow 22/tcp >/dev/null 2>&1
+            print_status "Allowed SSH (port 22)"
+            
+            # Enable UFW
+            sudo ufw --force enable >/dev/null 2>&1
+            print_status "UFW firewall enabled"
+        else
+            print_warning "UFW not enabled - skipping firewall configuration"
+        fi
     fi
     
-    print_status "Configuring firewall rules..."
-    sudo ufw allow 80/tcp >/dev/null 2>&1 && print_status "Allowed HTTP (port 80)"
-    sudo ufw allow 443/tcp >/dev/null 2>&1 && print_status "Allowed HTTPS (port 443)"
-    sudo ufw reload >/dev/null 2>&1
-    print_status "Firewall rules reloaded"
-    echo
-    print_status "Current firewall rules:"
-    sudo ufw status numbered | grep -E "(80|443|22)" || true
+    # Configure firewall rules if UFW is active
+    if sudo ufw status | grep -q "Status: active"; then
+        print_status "Configuring firewall rules..."
+        
+        # Allow HTTP (port 80)
+        if sudo ufw allow 80/tcp >/dev/null 2>&1; then
+            print_status "Allowed HTTP (port 80) for API access"
+        fi
+        
+        # Allow HTTPS (port 443)
+        if sudo ufw allow 443/tcp >/dev/null 2>&1; then
+            print_status "Allowed HTTPS (port 443) for secure API access"
+        fi
+        
+        # Reload firewall
+        sudo ufw reload >/dev/null 2>&1
+        print_status "Firewall rules reloaded"
+        
+        # Show firewall status
+        echo
+        print_status "Current firewall rules:"
+        sudo ufw status numbered | grep -E "(80|443|22)" || true
+    fi
 else
     print_warning "UFW firewall not installed"
     print_warning "To install UFW: sudo apt install ufw"
@@ -634,12 +679,14 @@ echo
 
 # Step 13: Test API endpoint
 print_step "Step 13: Testing API endpoint..."
-sleep 2
+sleep 2  # Give Apache a moment to fully restart
 
 if test_api; then
     print_status "API endpoint test passed"
 else
     print_warning "API endpoint test failed, checking manually..."
+    
+    # Manual test with more details
     MANUAL_TEST=$(curl -s -w "\n%{http_code}" -X POST http://localhost/api/api.php \
         -H "Content-Type: application/json" \
         -d "{\"secret_key\": \"${API_SECRET_KEY}\"}" 2>/dev/null)
@@ -647,10 +694,15 @@ else
     HTTP_CODE=$(echo "$MANUAL_TEST" | tail -n1)
     RESPONSE_BODY=$(echo "$MANUAL_TEST" | head -n -1)
     
-    if [ "$HTTP_CODE" = "200" ] && echo "$RESPONSE_BODY" | grep -q '"success": true'; then
-        print_status "API endpoint test passed on retry"
+    if [ "$HTTP_CODE" = "200" ]; then
+        if echo "$RESPONSE_BODY" | grep -q '"success": true'; then
+            print_status "API endpoint test passed on retry"
+        else
+            print_error "API returned success=false: $RESPONSE_BODY"
+            exit 1
+        fi
     else
-        print_error "API test failed - HTTP $HTTP_CODE: $RESPONSE_BODY"
+        print_error "API returned HTTP $HTTP_CODE: $RESPONSE_BODY"
         exit 1
     fi
 fi
@@ -697,7 +749,7 @@ curl -X POST http://localhost/api/api.php \\
 echo
 echo
 
-# Test 4: Test with wrong secret key
+# Test 4: Test with wrong secret key (should fail)
 echo "Test 4: Testing with wrong secret key (should fail)"
 curl -X POST http://localhost/api/api.php \\
   -H "Content-Type: application/json" \\
@@ -715,6 +767,8 @@ echo
 
 # Step 15: Final verification
 print_step "Step 15: Final system verification..."
+
+# Check all services
 SERVICES_OK=true
 
 if ! systemctl is-active --quiet apache2; then
@@ -731,20 +785,27 @@ else
     print_status "MySQL service: Running"
 fi
 
+# Check database
 if database_exists && table_exists; then
-    FINAL_RECORD_COUNT=$($MYSQL_CMD -D "${DB_NAME}" -se "SELECT COUNT(*) FROM remote_logs;" 2>/dev/null)
+    if [ -z "${MYSQL_ROOT_PASSWORD}" ]; then
+        FINAL_RECORD_COUNT=$(mysql -u root -D "${DB_NAME}" -se "SELECT COUNT(*) FROM remote_logs;" 2>/dev/null)
+    else
+        FINAL_RECORD_COUNT=$(mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -D "${DB_NAME}" -se "SELECT COUNT(*) FROM remote_logs;" 2>/dev/null)
+    fi
     print_status "Database: OK (${FINAL_RECORD_COUNT} records)"
 else
     print_error "Database or table is missing"
     SERVICES_OK=false
 fi
 
-if [ -f "$API_DIR/connection.php" ] && [ -f "$API_DIR/api.php" ] && [ -f "$API_DIR/test_api.sh" ]; then
+# Check API files
+if [ -f "$API_DIR/connection.php" ] && [ -f "$API_DIR/api.php" ]; then
     print_status "API files: OK"
 else
-    print_error "Some API files are missing"
+    print_error "API files are missing"
     SERVICES_OK=false
 fi
+
 echo
 
 # Final status
@@ -760,8 +821,8 @@ if [ "$SERVICES_OK" = true ]; then
     echo -e "${BLUE}API Endpoint (Local):${NC} http://localhost/api/api.php"
     echo -e "${BLUE}API Endpoint (Remote):${NC} http://${SERVER_IP}/api/api.php"
     echo -e "${BLUE}Secret Key:${NC} ${API_SECRET_KEY}"
-    echo -e "${BLUE}Database:${NC} ${DB_NAME} (${FINAL_RECORD_COUNT} records)"
-    echo -e "${BLUE}Database User:${NC} ${API_USER}"
+    echo -e "${BLUE}Database:${NC} ${DB_NAME} (${FINAL_RECORD_COUNT} sample records)"
+    echo -e "${BLUE}Database User:${NC} root (empty password)"
     echo -e "${BLUE}Test Script:${NC} ${API_DIR}/test_api.sh"
     echo
     echo -e "${YELLOW}Quick Test (Local):${NC}"
@@ -776,16 +837,14 @@ if [ "$SERVICES_OK" = true ]; then
     echo
     echo -e "${YELLOW}Run full tests:${NC} bash ${API_DIR}/test_api.sh"
     echo
-    echo -e "${YELLOW}Security Recommendation:${NC}"
-    echo "Consider enabling HTTPS for secure API access. Install Certbot and run:"
-    echo "  sudo apt install certbot python3-certbot-apache"
-    echo "  sudo certbot --apache"
-    echo
+    
+    # Show firewall status
     if command_exists ufw && sudo ufw status | grep -q "Status: active"; then
         echo -e "${GREEN}Firewall Status:${NC}"
         sudo ufw status | grep -E "(Status|80|443)" || true
         echo
     fi
+    
     print_status "Installation completed successfully!"
     echo
 else

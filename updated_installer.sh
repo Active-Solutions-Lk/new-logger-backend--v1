@@ -15,7 +15,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration (same defaults as full installer)
-DB_NAME="syslog_db"
+DB_NAME="logger_db"
 API_SECRET_KEY="sk_5a1b3c4d2e6f7a8b9c0d1e2f3a4b5c6d"
 API_DIR="/var/www/html/api"
 MYSQL_ROOT_PASSWORD=""
@@ -104,8 +104,8 @@ else
 fi
 echo
 
-# Database and table setup (same behavior)
-print_step "Setting up database and table..."
+## Database creation only (no remote_logs)
+print_step "Ensuring database exists..."
 DB_EXISTS=$($MYSQL_CMD -e "SHOW DATABASES LIKE '${DB_NAME}';" 2>/dev/null | grep -c "${DB_NAME}" || true)
 if [ "$DB_EXISTS" -eq 0 ]; then
     print_status "Creating database '${DB_NAME}'..."
@@ -118,48 +118,36 @@ EOF
 else
     print_warning "Database '${DB_NAME}' already exists"
 fi
+echo
 
-TABLE_EXISTS=$($MYSQL_CMD -D "${DB_NAME}" -e "SHOW TABLES LIKE 'remote_logs';" 2>/dev/null | grep -c "remote_logs" || true)
-if [ "$TABLE_EXISTS" -eq 0 ]; then
-    print_status "Creating table 'remote_logs'..."
-    $MYSQL_CMD -D "${DB_NAME}" << 'EOF'
-CREATE TABLE remote_logs (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    received_at DATETIME NULL,
-    hostname VARCHAR(255) NULL,
-    facility VARCHAR(50) NULL,
-    message TEXT NULL,
-    port INT NULL,
-    INDEX idx_received_at (received_at),
-    INDEX idx_hostname (hostname),
-    INDEX idx_facility (facility)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-EOF
-    print_status "Table created"
+## Create project tables using existing setup scripts
+print_step "Creating project tables (collectors, log_mirror, parsed_logs, devices)..."
+if php setup_collector.php; then
+    print_status "Collector-related tables ensured."
 else
-    print_warning "Table 'remote_logs' already exists"
+    print_warning "setup_collector.php failed; check PHP errors."
 fi
 
-# Insert sample data if empty
-RECORD_COUNT=$($MYSQL_CMD -D "${DB_NAME}" -se "SELECT COUNT(*) FROM remote_logs;" 2>/dev/null || echo 0)
-if [ "$RECORD_COUNT" -eq 0 ]; then
-    print_status "Inserting sample data..."
-    $MYSQL_CMD -D "${DB_NAME}" << 'EOF'
-INSERT INTO remote_logs (received_at, hostname, facility, message, port) VALUES
-('2025-09-20 12:24:39', 'DiskStation4', 'user', 'Test message from Synology Syslog Client', 520),
-('2025-09-21 07:01:07', 'Active-Com', 'user', 'SYSTEM: System successfully registered', 520),
-('2025-09-22 11:04:40', 'Active-Com', 'user', 'User signed in successfully', 520),
-('2025-09-22 19:00:01', 'Active-Com', 'user', 'SYSTEM: Shutdown triggered by schedule', 520),
-('2025-09-22 19:00:10', 'Active-Com', 'user', 'SYSTEM: USB Copy service stopped', 520),
-('2025-09-23 07:02:07', 'Active-Com', 'user', 'SYSTEM: DDNS registration successful', 520);
-EOF
-    print_status "Sample data inserted (6 records)"
-else
-    print_status "Existing records: ${RECORD_COUNT}"
+# Optional: setup parsing patterns and field rules if scripts exist
+if [ -f "setup_parsing_rules.php" ]; then
+    if php setup_parsing_rules.php; then
+        print_status "Parsing rules added."
+    else
+        print_warning "setup_parsing_rules.php failed; continuing."
+    fi
+fi
+
+if [ -f "setup_field_rules.php" ]; then
+    if php setup_field_rules.php; then
+        print_status "Field rules added."
+    else
+        print_warning "setup_field_rules.php failed; continuing."
+    fi
 fi
 echo
 
-# API directory and files (same behavior)
+API_ENABLE="${API_ENABLE:-0}"
+if [ "$API_ENABLE" = "1" ]; then
 print_step "Setting up API directory..."
 if [ ! -d "$API_DIR" ]; then
     mkdir -p "$API_DIR"
@@ -328,7 +316,7 @@ DB_TEST=$(php -r "
 require_once '$API_DIR/connection.php';
 $pdo = getDBConnection();
 if ($pdo) {
-    $stmt = $pdo->query('SELECT COUNT(*) as count FROM remote_logs');
+    $stmt = $pdo->query('SELECT 1 as count');
     $result = $stmt->fetch();
     echo 'SUCCESS:' . $result['count'];
 } else {
@@ -358,9 +346,11 @@ else
 fi
 echo
 
+fi # end API_ENABLE
+
 # Summary (no restarts performed)
 SERVER_IP=$(hostname -I | awk '{print $1}' 2>/dev/null || echo "127.0.0.1")
-FINAL_COUNT=$($MYSQL_CMD -D "${DB_NAME}" -se "SELECT COUNT(*) FROM remote_logs;" 2>/dev/null || echo 0)
+FINAL_COUNT=$($MYSQL_CMD -D "${DB_NAME}" -se "SELECT COUNT(*) FROM collectors;" 2>/dev/null || echo 0)
 
 clear
 echo -e "${GREEN}╔════════════════════════════════════════════════════╗${NC}"
@@ -375,7 +365,7 @@ echo "  Secret Key:      ${API_SECRET_KEY}"
 echo
 echo -e "${BLUE}═══ DATABASE INFORMATION ═══${NC}"
 echo "  Database Name:   ${DB_NAME}"
-echo "  Current Records: ${FINAL_COUNT}"
+echo "  Collectors:      ${FINAL_COUNT}"
 echo "  User:            root"
 echo
 echo -e "${YELLOW}Notes:${NC}"
